@@ -1,0 +1,305 @@
+name: Quality Gates
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "backend/**"
+      - "frontend/**"
+      - "docker-compose.yml"
+      - ".github/workflows/quality-gates.yml"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "backend/**"
+      - "frontend/**"
+      - "docker-compose.yml"
+      - ".github/workflows/quality-gates.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  actions: read
+  security-events: write
+
+jobs:
+  ci:
+    name: CI Base
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: |
+            backend/package-lock.json
+            frontend/package-lock.json
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: npm ci
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Lint frontend
+        working-directory: frontend
+        run: npm run lint
+
+      - name: Backend lint status
+        run: echo "No backend lint script is configured; CI currently enforces frontend ESLint only."
+
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build
+
+      - name: Dependency scan (OSV)
+        uses: google/osv-scanner-action@v1
+        with:
+          scan-args: |-
+            --recursive
+            .
+
+      - name: Secret scan (Gitleaks)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Test status
+        run: |
+          echo "WARNING: No frontend test script was detected."
+          echo "WARNING: backend/package.json still uses the default placeholder test script."
+          echo "WARNING: Add real test commands before enabling blocking test execution."
+
+      - name: Coverage status
+        run: echo "WARNING: No coverage was measured; threshold enforcement is disabled until automated tests are added."
+
+  sca-trivy-scan:
+    name: Trivy SCA Scan
+    needs: ci
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run Trivy filesystem report scan
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,secret,license
+          severity: LOW,MEDIUM,HIGH,CRITICAL
+          ignore-unfixed: false
+          format: sarif
+          output: trivy-fs-all.sarif
+          exit-code: 0
+
+      - name: Run Trivy filesystem blocking gate
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,secret,license
+          severity: HIGH,CRITICAL
+          ignore-unfixed: false
+          format: sarif
+          output: trivy-fs-blocking.sarif
+          exit-code: 1
+
+      - name: Upload Trivy SARIF
+        if: always() && github.repository_visibility == 'public'
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: trivy-fs-all.sarif
+
+      - name: Upload Trivy artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-results
+          path: |
+            trivy-fs-all.sarif
+            trivy-fs-blocking.sarif
+          if-no-files-found: ignore
+
+  container-grype-scan:
+    name: Grype Container Scan
+    needs: ci
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build backend image
+        run: docker build -f backend/Dockerfile -t data-cosmos-backend:${{ github.sha }} backend
+
+      - name: Run backend Grype report scan
+        uses: anchore/scan-action@v7.4.0
+        with:
+          image: data-cosmos-backend:${{ github.sha }}
+          fail-build: false
+          severity-cutoff: low
+          output-format: sarif
+          output-file: backend-grype.sarif
+
+      - name: Run backend Grype blocking gate
+        uses: anchore/scan-action@v7.4.0
+        with:
+          image: data-cosmos-backend:${{ github.sha }}
+          fail-build: true
+          severity-cutoff: high
+          output-format: sarif
+          output-file: backend-grype-blocking.sarif
+
+      - name: Upload backend Grype SARIF
+        if: always() && github.repository_visibility == 'public'
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: backend-grype.sarif
+
+      - name: Build frontend image
+        run: docker build -f frontend/Dockerfile -t data-cosmos-frontend:${{ github.sha }} frontend
+
+      - name: Run frontend Grype report scan
+        uses: anchore/scan-action@v7.4.0
+        with:
+          image: data-cosmos-frontend:${{ github.sha }}
+          fail-build: false
+          severity-cutoff: low
+          output-format: sarif
+          output-file: frontend-grype.sarif
+
+      - name: Run frontend Grype blocking gate
+        uses: anchore/scan-action@v7.4.0
+        with:
+          image: data-cosmos-frontend:${{ github.sha }}
+          fail-build: true
+          severity-cutoff: high
+          output-format: sarif
+          output-file: frontend-grype-blocking.sarif
+
+      - name: Upload frontend Grype SARIF
+        if: always() && github.repository_visibility == 'public'
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: frontend-grype.sarif
+
+      - name: Upload Grype artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: grype-results
+          path: |
+            backend-grype.sarif
+            backend-grype-blocking.sarif
+            frontend-grype.sarif
+            frontend-grype-blocking.sarif
+          if-no-files-found: ignore
+
+  hadolint-scan:
+    name: Hadolint Scan
+    needs: ci
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run Hadolint on backend Dockerfile
+        uses: hadolint/hadolint-action@v3.3.0
+        with:
+          dockerfile: backend/Dockerfile
+          failure-threshold: warning
+          format: sarif
+          output-file: backend-hadolint.sarif
+
+      - name: Upload backend Hadolint SARIF
+        if: always() && github.repository_visibility == 'public'
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: backend-hadolint.sarif
+
+      - name: Run Hadolint on frontend Dockerfile
+        uses: hadolint/hadolint-action@v3.3.0
+        with:
+          dockerfile: frontend/Dockerfile
+          failure-threshold: warning
+          format: sarif
+          output-file: frontend-hadolint.sarif
+
+      - name: Upload frontend Hadolint SARIF
+        if: always() && github.repository_visibility == 'public'
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: frontend-hadolint.sarif
+
+      - name: Upload Hadolint artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hadolint-results
+          path: |
+            backend-hadolint.sarif
+            frontend-hadolint.sarif
+          if-no-files-found: ignore
+
+  sonarqube-scan:
+    name: SonarQube Scan
+    needs: ci
+    if: ${{ secrets.SONAR_TOKEN != '' && secrets.SONAR_HOST_URL != '' && vars.SONAR_PROJECT_KEY != '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: |
+            backend/package-lock.json
+            frontend/package-lock.json
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: npm ci
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Run SonarQube scan
+        uses: SonarSource/sonarqube-scan-action@v8.2.0
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+        with:
+          args: >
+            -Dsonar.projectKey=${{ vars.SONAR_PROJECT_KEY }}
+            -Dsonar.projectName="blood-bank-management-system"
+            -Dsonar.qualitygate.wait=true
+            -Dsonar.sources=backend,frontend
+            -Dsonar.exclusions=**/node_modules/**,**/dist/**,**/coverage/**
+
+      - name: Upload SonarQube artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sonarqube-results
+          path: |
+            .scannerwork/report-task.txt
+            .scannerwork/*.json
+            .scannerwork/*.txt
+          if-no-files-found: ignore
