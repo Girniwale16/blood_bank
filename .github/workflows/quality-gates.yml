@@ -69,7 +69,7 @@ jobs:
         with:
           scan-args: |-
             --recursive
-            .
+            ./
 
       - name: Secret scan (Gitleaks)
         uses: gitleaks/gitleaks-action@v2
@@ -104,7 +104,7 @@ jobs:
           ignore-unfixed: false
           format: sarif
           output: trivy-fs-all.sarif
-          exit-code: 0
+          exit-code: "0"
 
       - name: Run Trivy filesystem blocking gate
         uses: aquasecurity/trivy-action@v0.36.0
@@ -116,7 +116,7 @@ jobs:
           ignore-unfixed: false
           format: sarif
           output: trivy-fs-blocking.sarif
-          exit-code: 1
+          exit-code: "1"
 
       - name: Upload Trivy SARIF
         if: always() && github.repository_visibility == 'public'
@@ -255,9 +255,8 @@ jobs:
           if-no-files-found: ignore
 
   sonarqube-scan:
-    name: SonarQube Scan
+    name: SonarQube Cloud Scan
     needs: ci
-    if: ${{ secrets.SONAR_TOKEN != '' && secrets.SONAR_HOST_URL != '' && vars.SONAR_PROJECT_KEY != '' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -282,14 +281,15 @@ jobs:
         working-directory: frontend
         run: npm ci
 
-      - name: Run SonarQube scan
+      - name: Run SonarQube Cloud scan
         uses: SonarSource/sonarqube-scan-action@v8.2.0
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+          SONAR_HOST_URL: https://sonarcloud.io
         with:
           args: >
             -Dsonar.projectKey=${{ vars.SONAR_PROJECT_KEY }}
+            -Dsonar.organization=${{ vars.SONAR_ORGANIZATION }}
             -Dsonar.projectName="blood-bank-management-system"
             -Dsonar.qualitygate.wait=true
             -Dsonar.sources=backend,frontend
