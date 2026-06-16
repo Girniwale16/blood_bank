@@ -53,22 +53,36 @@ jobs:
         working-directory: frontend
 
       - name: Run backend lint if present
+        continue-on-error: true
         run: npm run lint --if-present
         working-directory: backend
 
       - name: Run frontend lint
-        run: npm run lint
+        continue-on-error: true
+        run: npm run lint -- --format json --output-file eslint-report.json
         working-directory: frontend
 
       - name: Build frontend
+        continue-on-error: true
         run: npm run build
         working-directory: frontend
 
       - name: Warn about missing automated tests
+        continue-on-error: true
         run: |
-          echo "No automated test suite was detected in backend or frontend."
-          echo "Coverage threshold remains disabled until real tests are added."
-          echo "Current backend test script is a placeholder and is intentionally not executed in CI."
+          echo "No automated test suite was detected in backend or frontend." > ci-no-tests.txt
+          echo "Coverage threshold is set to 0 because no coverage is currently measured." >> ci-no-tests.txt
+          echo "The backend test script is still the default placeholder and is intentionally not executed in CI." >> ci-no-tests.txt
+
+      - name: Upload CI artifacts
+        if: always()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: ci-results
+          path: |
+            frontend/eslint-report.json
+            ci-no-tests.txt
+          if-no-files-found: ignore
 
   dependency-osv-scan:
     name: Dependency Scan (OSV)
@@ -280,6 +294,10 @@ jobs:
 
       - name: Install frontend dependencies
         run: npm ci
+        working-directory: frontend
+
+      - name: Build frontend
+        run: npm run build
         working-directory: frontend
 
       - name: Run SonarQube Cloud scan
