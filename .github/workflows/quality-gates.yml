@@ -7,8 +7,6 @@ on:
     paths:
       - "backend/**"
       - "frontend/**"
-      - "backend/Dockerfile"
-      - "frontend/Dockerfile"
       - "docker-compose.yml"
       - ".github/workflows/quality-gates.yml"
   pull_request:
@@ -17,8 +15,6 @@ on:
     paths:
       - "backend/**"
       - "frontend/**"
-      - "backend/Dockerfile"
-      - "frontend/Dockerfile"
       - "docker-compose.yml"
       - ".github/workflows/quality-gates.yml"
 
@@ -28,8 +24,8 @@ concurrency:
 
 permissions:
   contents: read
-  actions: read
   security-events: write
+  actions: read
 
 jobs:
   ci-base:
@@ -56,78 +52,53 @@ jobs:
         working-directory: frontend
         run: npm ci
 
-      - name: Backend code quality status
-        run: echo "No backend lint script detected in backend/package.json; backend lint is currently not enforced."
-
       - name: Lint frontend
         working-directory: frontend
         run: npm run lint
+
+      - name: Backend script check
+        working-directory: backend
+        run: node --check server.js
 
       - name: Build frontend
         working-directory: frontend
         run: npm run build
 
-  osv-scan:
+      - name: Test and coverage status
+        run: |
+          echo "No automated test suite was detected in backend or frontend."
+          echo "Coverage enforcement is disabled until tests are added."
+          echo "Backend package.json currently defines a placeholder test script that exits 1."
+          echo "Frontend package.json does not define a test script."
+
+  dependency-osv-scan:
     name: OSV Dependency Scan
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v6.0.3
+    needs: ci-base
+    permissions:
+      contents: read
+      actions: read
+    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@v2.3.8
+    with:
+      scan-args: |-
+        --recursive
+        ./
 
-      - name: Run OSV report scan
-        uses: google/osv-scanner-action@v2.3.8
-        with:
-          scan-args: |-
-            --recursive
-            --format json
-            --output osv-results.json
-            ./
-
-      - name: Run OSV blocking scan
-        uses: google/osv-scanner-action@v2.3.8
-        with:
-          scan-args: |-
-            --recursive
-            ./
-
-      - name: Upload OSV artifact
-        if: always()
-        uses: actions/upload-artifact@v7.0.1
-        with:
-          name: osv-results
-          path: osv-results.json
-          if-no-files-found: ignore
-
-  gitleaks-scan:
+  secret-gitleaks-scan:
     name: Gitleaks Secret Scan
+    needs: ci-base
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6.0.3
 
-      - name: Run Gitleaks scan
+      - name: Run Gitleaks
         uses: gitleaks/gitleaks-action@v3.0.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          args: detect --source . --redact --report-format sarif --report-path gitleaks.sarif --exit-code 1
-
-      - name: Upload Gitleaks SARIF
-        if: always() && github.repository_visibility == 'public'
-        uses: github/codeql-action/upload-sarif@v4.33.0
-        with:
-          sarif_file: gitleaks.sarif
-
-      - name: Upload Gitleaks artifact
-        if: always()
-        uses: actions/upload-artifact@v7.0.1
-        with:
-          name: gitleaks-results
-          path: gitleaks.sarif
-          if-no-files-found: ignore
 
   sca-trivy-scan:
     name: Trivy Filesystem Scan
+    needs: ci-base
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -173,8 +144,75 @@ jobs:
             trivy-fs-blocking.sarif
           if-no-files-found: ignore
 
+  container-grype-scan:
+    name: Grype Container Scan
+    needs: ci-base
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6.0.3
+
+      - name: Build backend image
+        if: ${{ hashFiles('backend/Dockerfile') != '' }}
+        run: docker build -f backend/Dockerfile -t data-cosmos-backend:${{ github.sha }} backend
+
+      - name: Scan backend image with Grype
+        if: ${{ hashFiles('backend/Dockerfile') != '' }}
+        uses: anchore/scan-action@v7.4.0
+        with:
+          image: data-cosmos-backend:${{ github.sha }}
+          fail-build: true
+          severity-cutoff: high
+          output-format: sarif
+          output-file: backend-grype.sarif
+
+      - name: Upload backend Grype SARIF
+        if: ${{ always() && hashFiles('backend/Dockerfile') != '' && github.repository_visibility == 'public' }}
+        uses: github/codeql-action/upload-sarif@v4.33.0
+        with:
+          sarif_file: backend-grype.sarif
+          category: grype-backend
+
+      - name: Upload backend Grype artifact
+        if: always()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: backend-grype-results
+          path: backend-grype.sarif
+          if-no-files-found: ignore
+
+      - name: Build frontend image
+        if: ${{ hashFiles('frontend/Dockerfile') != '' }}
+        run: docker build -f frontend/Dockerfile -t data-cosmos-frontend:${{ github.sha }} frontend
+
+      - name: Scan frontend image with Grype
+        if: ${{ hashFiles('frontend/Dockerfile') != '' }}
+        uses: anchore/scan-action@v7.4.0
+        with:
+          image: data-cosmos-frontend:${{ github.sha }}
+          fail-build: true
+          severity-cutoff: high
+          output-format: sarif
+          output-file: frontend-grype.sarif
+
+      - name: Upload frontend Grype SARIF
+        if: ${{ always() && hashFiles('frontend/Dockerfile') != '' && github.repository_visibility == 'public' }}
+        uses: github/codeql-action/upload-sarif@v4.33.0
+        with:
+          sarif_file: frontend-grype.sarif
+          category: grype-frontend
+
+      - name: Upload frontend Grype artifact
+        if: always()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: frontend-grype-results
+          path: frontend-grype.sarif
+          if-no-files-found: ignore
+
   hadolint-scan:
     name: Hadolint Scan
+    needs: ci-base
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -190,10 +228,19 @@ jobs:
           output-file: backend-hadolint.sarif
 
       - name: Upload backend Hadolint SARIF
-        if: ${{ hashFiles('backend/Dockerfile') != '' }} && github.repository_visibility == 'public'
+        if: ${{ always() && hashFiles('backend/Dockerfile') != '' && github.repository_visibility == 'public' }}
         uses: github/codeql-action/upload-sarif@v4.33.0
         with:
           sarif_file: backend-hadolint.sarif
+          category: hadolint-backend
+
+      - name: Upload backend Hadolint artifact
+        if: always()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: backend-hadolint-results
+          path: backend-hadolint.sarif
+          if-no-files-found: ignore
 
       - name: Run Hadolint on frontend Dockerfile
         if: ${{ hashFiles('frontend/Dockerfile') != '' }}
@@ -205,80 +252,23 @@ jobs:
           output-file: frontend-hadolint.sarif
 
       - name: Upload frontend Hadolint SARIF
-        if: ${{ hashFiles('frontend/Dockerfile') != '' }} && github.repository_visibility == 'public'
+        if: ${{ always() && hashFiles('frontend/Dockerfile') != '' && github.repository_visibility == 'public' }}
         uses: github/codeql-action/upload-sarif@v4.33.0
         with:
           sarif_file: frontend-hadolint.sarif
+          category: hadolint-frontend
 
-      - name: Upload Hadolint artifact
+      - name: Upload frontend Hadolint artifact
         if: always()
         uses: actions/upload-artifact@v7.0.1
         with:
-          name: hadolint-results
-          path: |
-            backend-hadolint.sarif
-            frontend-hadolint.sarif
-          if-no-files-found: ignore
-
-  container-grype-scan:
-    name: Grype Container Scan
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v6.0.3
-
-      - name: Build backend image
-        if: ${{ hashFiles('backend/Dockerfile') != '' }}
-        run: docker build -f backend/Dockerfile -t blood-bank-backend:${{ github.sha }} backend
-
-      - name: Scan backend image with Grype
-        if: ${{ hashFiles('backend/Dockerfile') != '' }}
-        uses: anchore/scan-action@v7.4.0
-        with:
-          image: blood-bank-backend:${{ github.sha }}
-          fail-build: true
-          severity-cutoff: high
-          output-format: sarif
-          output-file: backend-grype.sarif
-
-      - name: Upload backend Grype SARIF
-        if: ${{ hashFiles('backend/Dockerfile') != '' }} && github.repository_visibility == 'public'
-        uses: github/codeql-action/upload-sarif@v4.33.0
-        with:
-          sarif_file: backend-grype.sarif
-
-      - name: Build frontend image
-        if: ${{ hashFiles('frontend/Dockerfile') != '' }}
-        run: docker build -f frontend/Dockerfile -t blood-bank-frontend:${{ github.sha }} frontend
-
-      - name: Scan frontend image with Grype
-        if: ${{ hashFiles('frontend/Dockerfile') != '' }}
-        uses: anchore/scan-action@v7.4.0
-        with:
-          image: blood-bank-frontend:${{ github.sha }}
-          fail-build: true
-          severity-cutoff: high
-          output-format: sarif
-          output-file: frontend-grype.sarif
-
-      - name: Upload frontend Grype SARIF
-        if: ${{ hashFiles('frontend/Dockerfile') != '' }} && github.repository_visibility == 'public'
-        uses: github/codeql-action/upload-sarif@v4.33.0
-        with:
-          sarif_file: frontend-grype.sarif
-
-      - name: Upload Grype artifact
-        if: always()
-        uses: actions/upload-artifact@v7.0.1
-        with:
-          name: grype-results
-          path: |
-            backend-grype.sarif
-            frontend-grype.sarif
+          name: frontend-hadolint-results
+          path: frontend-hadolint.sarif
           if-no-files-found: ignore
 
   sonarqube-scan:
     name: SonarQube Cloud Scan
+    needs: ci-base
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -307,11 +297,10 @@ jobs:
         working-directory: frontend
         run: npm run build
 
-      - name: Run SonarQube Cloud scan
+      - name: Run SonarQube scan
         uses: SonarSource/sonarqube-scan-action@v8.2.0
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          SONAR_HOST_URL: https://sonarcloud.io
         with:
           args: >
             -Dsonar.projectKey=${{ vars.SONAR_PROJECT_KEY }}
@@ -319,7 +308,7 @@ jobs:
             -Dsonar.projectName="blood-bank-management-system"
             -Dsonar.qualitygate.wait=true
             -Dsonar.sources=backend,frontend
-            -Dsonar.exclusions=**/node_modules/**,**/dist/**,**/coverage/**,**/*.min.js
+            -Dsonar.exclusions=**/node_modules/**,**/dist/**,**/coverage/**,**/.scannerwork/**
 
       - name: Upload SonarQube artifact
         if: always()
@@ -328,46 +317,5 @@ jobs:
           name: sonarqube-results
           path: |
             .scannerwork/report-task.txt
-            .scannerwork/scanner-report
+            .scannerwork/scanner-report/**
           if-no-files-found: ignore
-
-  test-and-coverage:
-    name: Test And Coverage Status
-    runs-on: ubuntu-latest
-    needs:
-      - ci-base
-      - osv-scan
-      - gitleaks-scan
-      - sca-trivy-scan
-      - hadolint-scan
-      - container-grype-scan
-      - sonarqube-scan
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v6.0.3
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v6.4.0
-        with:
-          node-version: "20"
-          cache: npm
-          cache-dependency-path: |
-            backend/package-lock.json
-            frontend/package-lock.json
-
-      - name: Install backend dependencies
-        working-directory: backend
-        run: npm ci
-
-      - name: Install frontend dependencies
-        working-directory: frontend
-        run: npm ci
-
-      - name: Test status
-        run: |
-          echo "WARNING: no automated test scripts were detected in backend/package.json or frontend/package.json."
-          echo "Add project test commands to enable test execution in this workflow."
-
-      - name: Coverage status
-        run: |
-          echo "WARNING: no coverage measured; threshold enforcement is disabled until tests are added."
