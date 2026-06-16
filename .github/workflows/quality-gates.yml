@@ -65,10 +65,12 @@ jobs:
         working-directory: frontend
 
       - name: Test status
-        run: echo "WARNING: No automated test suite is configured yet for this repository."
+        run: |
+         echo "WARNING: No automated test suite is configured yet for this repository."
 
       - name: Coverage status
-        run: echo "WARNING: No coverage report is configured yet, so coverage enforcement is disabled."
+        run: |
+        echo "WARNING: No coverage report is configured yet, so coverage enforcement is disabled."
 
   osv-scan:
     name: OSV Dependency Scan
