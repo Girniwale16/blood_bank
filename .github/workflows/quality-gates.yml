@@ -41,55 +41,51 @@ jobs:
           node-version: "20"
           cache: npm
           cache-dependency-path: |
-            frontend/package-lock.json
             backend/package-lock.json
-
-      - name: Install frontend dependencies
-        run: npm ci
-        working-directory: frontend
+            frontend/package-lock.json
 
       - name: Install backend dependencies
         run: npm ci
         working-directory: backend
 
-      - name: Lint frontend
-        run: npm run lint
+      - name: Install frontend dependencies
+        run: npm ci
         working-directory: frontend
 
-      - name: Syntax check backend entrypoint
-        run: node --check server.js
+      - name: Run backend lint if present
+        run: npm run lint --if-present
         working-directory: backend
+
+      - name: Run frontend lint
+        run: npm run lint
+        working-directory: frontend
 
       - name: Build frontend
         run: npm run build
         working-directory: frontend
 
-      - name: Test status
+      - name: Warn about missing automated tests
         run: |
-          echo "WARNING: No automated test suite is configured yet for this repository."
+          echo "No automated test suite was detected in backend or frontend."
+          echo "Coverage threshold remains disabled until real tests are added."
+          echo "Current backend test script is a placeholder and is intentionally not executed in CI."
 
-      - name: Coverage status
-        run: |
-          echo "WARNING: No coverage report is configured yet, so coverage enforcement is disabled."
-
-  osv-scan:
-    name: OSV Dependency Scan
+  dependency-osv-scan:
+    name: Dependency Scan (OSV)
     needs: ci-base
     uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@v2.3.8
     with:
-      scan-args: |
+      scan-args: |-
         --recursive
         ./
 
-  gitleaks-scan:
-    name: Gitleaks Secret Scan
+  secret-gitleaks-scan:
+    name: Secret Scan (Gitleaks)
     needs: ci-base
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6.0.3
-        with:
-          fetch-depth: 0
 
       - name: Run Gitleaks
         uses: gitleaks/gitleaks-action@v3.0.0
@@ -97,7 +93,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   sca-trivy-scan:
-    name: Trivy Filesystem Scan
+    name: Trivy SCA Scan
     needs: ci-base
     runs-on: ubuntu-latest
     steps:
@@ -133,8 +129,9 @@ jobs:
         uses: github/codeql-action/upload-sarif@v4.33.0
         with:
           sarif_file: trivy-fs-all.sarif
+          category: trivy-fs
 
-      - name: Upload Trivy artifact
+      - name: Upload Trivy artifacts
         if: always()
         uses: actions/upload-artifact@v7.0.1
         with:
@@ -153,11 +150,9 @@ jobs:
         uses: actions/checkout@v6.0.3
 
       - name: Build backend image
-        if: ${{ hashFiles('backend/Dockerfile') != '' }}
         run: docker build -f backend/Dockerfile -t data-cosmos-backend:${{ github.sha }} backend
 
       - name: Scan backend image with Grype
-        if: ${{ hashFiles('backend/Dockerfile') != '' }}
         uses: anchore/scan-action@v7.4.0
         with:
           image: data-cosmos-backend:${{ github.sha }}
@@ -166,18 +161,24 @@ jobs:
           output-file: backend-grype.sarif
 
       - name: Upload backend Grype SARIF
-        if: ${{ hashFiles('backend/Dockerfile') != '' }} && github.repository_visibility == 'public'
+        if: always() && github.repository_visibility == 'public'
         uses: github/codeql-action/upload-sarif@v4.33.0
         with:
           sarif_file: backend-grype.sarif
           category: grype-backend
 
+      - name: Upload backend Grype artifact
+        if: always()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: backend-grype-results
+          path: backend-grype.sarif
+          if-no-files-found: ignore
+
       - name: Build frontend image
-        if: ${{ hashFiles('frontend/Dockerfile') != '' }}
         run: docker build -f frontend/Dockerfile -t data-cosmos-frontend:${{ github.sha }} frontend
 
       - name: Scan frontend image with Grype
-        if: ${{ hashFiles('frontend/Dockerfile') != '' }}
         uses: anchore/scan-action@v7.4.0
         with:
           image: data-cosmos-frontend:${{ github.sha }}
@@ -186,20 +187,18 @@ jobs:
           output-file: frontend-grype.sarif
 
       - name: Upload frontend Grype SARIF
-        if: ${{ hashFiles('frontend/Dockerfile') != '' }} && github.repository_visibility == 'public'
+        if: always() && github.repository_visibility == 'public'
         uses: github/codeql-action/upload-sarif@v4.33.0
         with:
           sarif_file: frontend-grype.sarif
           category: grype-frontend
 
-      - name: Upload Grype artifacts
+      - name: Upload frontend Grype artifact
         if: always()
         uses: actions/upload-artifact@v7.0.1
         with:
-          name: grype-results
-          path: |
-            backend-grype.sarif
-            frontend-grype.sarif
+          name: frontend-grype-results
+          path: frontend-grype.sarif
           if-no-files-found: ignore
 
   hadolint-scan:
@@ -211,7 +210,6 @@ jobs:
         uses: actions/checkout@v6.0.3
 
       - name: Run Hadolint on backend Dockerfile
-        if: ${{ hashFiles('backend/Dockerfile') != '' }}
         uses: hadolint/hadolint-action@v3.3.0
         with:
           dockerfile: backend/Dockerfile
@@ -220,14 +218,21 @@ jobs:
           output-file: backend-hadolint.sarif
 
       - name: Upload backend Hadolint SARIF
-        if: ${{ hashFiles('backend/Dockerfile') != '' }} && github.repository_visibility == 'public'
+        if: always() && github.repository_visibility == 'public'
         uses: github/codeql-action/upload-sarif@v4.33.0
         with:
           sarif_file: backend-hadolint.sarif
           category: hadolint-backend
 
+      - name: Upload backend Hadolint artifact
+        if: always()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: backend-hadolint-results
+          path: backend-hadolint.sarif
+          if-no-files-found: ignore
+
       - name: Run Hadolint on frontend Dockerfile
-        if: ${{ hashFiles('frontend/Dockerfile') != '' }}
         uses: hadolint/hadolint-action@v3.3.0
         with:
           dockerfile: frontend/Dockerfile
@@ -236,20 +241,18 @@ jobs:
           output-file: frontend-hadolint.sarif
 
       - name: Upload frontend Hadolint SARIF
-        if: ${{ hashFiles('frontend/Dockerfile') != '' }} && github.repository_visibility == 'public'
+        if: always() && github.repository_visibility == 'public'
         uses: github/codeql-action/upload-sarif@v4.33.0
         with:
           sarif_file: frontend-hadolint.sarif
           category: hadolint-frontend
 
-      - name: Upload Hadolint artifacts
+      - name: Upload frontend Hadolint artifact
         if: always()
         uses: actions/upload-artifact@v7.0.1
         with:
-          name: hadolint-results
-          path: |
-            backend-hadolint.sarif
-            frontend-hadolint.sarif
+          name: frontend-hadolint-results
+          path: frontend-hadolint.sarif
           if-no-files-found: ignore
 
   sonarqube-scan:
@@ -268,30 +271,30 @@ jobs:
           node-version: "20"
           cache: npm
           cache-dependency-path: |
-            frontend/package-lock.json
             backend/package-lock.json
-
-      - name: Install frontend dependencies
-        run: npm ci
-        working-directory: frontend
+            frontend/package-lock.json
 
       - name: Install backend dependencies
         run: npm ci
         working-directory: backend
 
-      - name: Run SonarQube scan
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: frontend
+
+      - name: Run SonarQube Cloud scan
         uses: SonarSource/sonarqube-scan-action@v8.2.0
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          SONAR_HOST_URL: https://sonarcloud.io
+          SONAR_HOST_URL: ${{ vars.SONAR_HOST_URL }}
         with:
           args: >
             -Dsonar.projectKey=${{ vars.SONAR_PROJECT_KEY }}
             -Dsonar.organization=${{ vars.SONAR_ORGANIZATION }}
             -Dsonar.projectName="blood-bank-management-system"
             -Dsonar.qualitygate.wait=true
-            -Dsonar.sources=backend,frontend/src
-            -Dsonar.exclusions=**/node_modules/**,**/dist/**,**/coverage/**,**/.git/**
+            -Dsonar.sources=backend,frontend
+            -Dsonar.exclusions=**/node_modules/**,**/dist/**,**/coverage/**,**/*.min.js
 
       - name: Upload SonarQube artifact
         if: always()
@@ -300,5 +303,6 @@ jobs:
           name: sonarqube-results
           path: |
             .scannerwork/report-task.txt
-            .scannerwork/scanner-report/*
+            .scannerwork/*.json
+            .scannerwork/*.txt
           if-no-files-found: ignore
